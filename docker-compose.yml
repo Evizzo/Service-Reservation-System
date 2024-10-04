@@ -1,0 +1,135 @@
+version: '3.8'
+services:
+  config-server:
+    build: ./services/config-server
+    container_name: config-server
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://config-server:8888/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  discovery:
+    build: ./services/discovery
+    container_name: discovery
+    depends_on:
+      config-server:
+        condition: service_healthy
+    environment:
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - EUREKA_INSTANCE_HOSTNAME=discovery
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://discovery:8761/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build: ./services/gateway
+    container_name: gateway
+    depends_on:
+      discovery:
+        condition: service_healthy
+    environment:
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    ports:
+      - "8222:8222"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://gateway:8222/actuator/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mysql-container:
+    image: mysql:8.0
+    container_name: mysql-container
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: P@ssword123
+      MYSQL_DATABASE: persons
+      MYSQL_PASSWORD: P@ssword123
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.2.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.2.1
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  authentication:
+    build: ./services/authentication
+    container_name: authentication
+    depends_on:
+      discovery:
+        condition: service_healthy
+      mysql-container:
+        condition: service_healthy
+    environment:
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-container:3306/persons
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=P@ssword123
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=create-drop
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    expose:
+      - "8095"
+
+  notification:
+    build: ./services/notification
+    container_name: notification
+    depends_on:
+      discovery:
+        condition: service_healthy
+      mysql-container:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      - SPRING_CONFIG_IMPORT=optional:configserver:http://config-server:8888
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql-container:3306/notifications
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=P@ssword123
+      - SPRING_JPA_HIBERNATE_DDL_AUTO=create-drop
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery:8761/eureka/
+    expose:
+      - "8093"
+
+volumes:
+  mysql_data:
